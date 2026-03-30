@@ -190,7 +190,7 @@
     url.searchParams.set("tag_0", "canada");
     url.searchParams.set("action", "process");
     url.searchParams.set("json", "1");
-    url.searchParams.set("page_size", "3");
+    url.searchParams.set("page_size", "12");
     return url.toString();
   }
 
@@ -289,6 +289,123 @@
     return uniqueTerms(candidates);
   }
 
+  function tokenize(text) {
+    return truncateWhitespace(String(text || "").toLowerCase())
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function getProductSearchText(product) {
+    return [
+      product.product_name_en,
+      product.product_name,
+      product.abbreviated_product_name,
+      product.generic_name,
+      product.generic_name_en,
+      product.brands,
+      product.categories,
+      product.ingredients_text,
+      product.ingredients_text_en
+    ]
+      .map(function (value) {
+        return truncateWhitespace(value);
+      })
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+  }
+
+  function scoreProduct(product, normalized, term) {
+    var searchText = getProductSearchText(product);
+    var normalizedTokens = tokenize(normalized);
+    var termTokens = tokenize(term);
+    var score = 0;
+    var overlap = 0;
+
+    if (!searchText) {
+      return 0;
+    }
+
+    if (searchText.indexOf(normalized) !== -1) {
+      score += 120;
+    }
+
+    if (term && searchText.indexOf(term) !== -1) {
+      score += 80;
+    }
+
+    normalizedTokens.forEach(function (token) {
+      if (searchText.indexOf(token) !== -1) {
+        overlap += 1;
+        score += 18;
+      }
+    });
+
+    termTokens.forEach(function (token) {
+      if (searchText.indexOf(token) !== -1) {
+        score += 10;
+      }
+    });
+
+    if (normalizedTokens.length && overlap === normalizedTokens.length) {
+      score += 60;
+    }
+
+    if (termTokens.length && termTokens.every(function (token) { return searchText.indexOf(token) !== -1; })) {
+      score += 35;
+    }
+
+    if (product.nutriscore_grade) {
+      score += 4;
+    }
+
+    if (product.nova_group) {
+      score += 4;
+    }
+
+    return score;
+  }
+
+  function rankProducts(products, normalized, searchTerms) {
+    var scored = [];
+    var seen = new Set();
+
+    products.forEach(function (entry) {
+      var product = entry.product;
+      var barcode = getBarcode(product);
+      var uniqueKey = barcode || getProductName(product).toLowerCase();
+      if (!uniqueKey || seen.has(uniqueKey)) {
+        return;
+      }
+      seen.add(uniqueKey);
+
+      var bestScore = 0;
+      var bestTerm = normalized;
+      searchTerms.forEach(function (term) {
+        var score = scoreProduct(product, normalized, term);
+        if (score > bestScore) {
+          bestScore = score;
+          bestTerm = term;
+        }
+      });
+
+      if (bestScore > 0) {
+        scored.push({
+          product: product,
+          score: bestScore,
+          matchedTerm: bestTerm
+        });
+      }
+    });
+
+    scored.sort(function (a, b) {
+      return b.score - a.score;
+    });
+
+    return scored.slice(0, 3);
+  }
+
   async function fetchProductsForIngredient(rawIngredient) {
     var normalized = normalizeIngredient(rawIngredient);
     if (!normalized) {
@@ -304,23 +421,40 @@
     var searchTerms = generateSearchTerms(normalized);
 
     try {
-      for (var i = 0; i < searchTerms.length; i += 1) {
-        var term = searchTerms[i];
-        var response = await fetch(buildSearchUrl(term));
-        if (!response.ok) {
-          throw new Error("Search failed with status " + response.status);
-        }
-        var data = await response.json();
-        var products = Array.isArray(data.products) ? data.products.slice(0, 3) : [];
-        if (products.length) {
+      var responses = await Promise.all(
+        searchTerms.map(async function (term) {
+          var response = await fetch(buildSearchUrl(term));
+          if (!response.ok) {
+            throw new Error("Search failed with status " + response.status);
+          }
+          var data = await response.json();
           return {
-            raw: rawIngredient,
-            normalized: normalized,
-            matchedTerm: term,
-            products: products,
-            error: false
+            term: term,
+            products: Array.isArray(data.products) ? data.products : []
           };
-        }
+        })
+      );
+
+      var ranked = rankProducts(
+        responses.flatMap(function (entry) {
+          return entry.products.map(function (product) {
+            return { term: entry.term, product: product };
+          });
+        }),
+        normalized,
+        searchTerms
+      );
+
+      if (ranked.length) {
+        return {
+          raw: rawIngredient,
+          normalized: normalized,
+          matchedTerm: ranked[0].matchedTerm || normalized,
+          products: ranked.map(function (entry) {
+            return entry.product;
+          }),
+          error: false
+        };
       }
 
       return {
@@ -394,7 +528,8 @@
 
     results.forEach(function (result) {
       var section = createElement("section", "off-section");
-      section.setAttribute("data-expanded", "false");
+      var defaultExpanded = result.products.length > 0;
+      section.setAttribute("data-expanded", defaultExpanded ? "true" : "false");
 
       var button = createElement("button", "off-section-toggle");
       button.type = "button";
@@ -411,12 +546,12 @@
       titleWrap.appendChild(ingredientName);
       titleWrap.appendChild(normalizedName);
 
-      var chevron = createElement("span", "off-chevron", "\u25B8");
+      var chevron = createElement("span", "off-chevron", defaultExpanded ? "\u25BE" : "\u25B8");
       button.appendChild(titleWrap);
       button.appendChild(chevron);
 
       var content = createElement("div", "off-section-content");
-      content.hidden = true;
+      content.hidden = !defaultExpanded;
 
       if (result.products.length) {
         result.products.forEach(function (product) {
