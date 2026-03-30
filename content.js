@@ -17,7 +17,7 @@
       el.textContent = text;
     }
     return el;
-  }+
+  }
 
   function truncateWhitespace(text) {
     return (text || "").replace(/\s+/g, " ").trim();
@@ -194,26 +194,150 @@
     return url.toString();
   }
 
+  function singularizeWord(word) {
+    if (!word) {
+      return "";
+    }
+    if (word.endsWith("ies") && word.length > 3) {
+      return word.slice(0, -3) + "y";
+    }
+    if (word.endsWith("oes") && word.length > 3) {
+      return word.slice(0, -2);
+    }
+    if (word.endsWith("ses") && word.length > 3) {
+      return word.slice(0, -2);
+    }
+    if (word.endsWith("s") && !word.endsWith("ss") && word.length > 2) {
+      return word.slice(0, -1);
+    }
+    return word;
+  }
+
+  function uniqueTerms(terms) {
+    var seen = new Set();
+    return terms.filter(function (term) {
+      var normalized = truncateWhitespace(term.toLowerCase());
+      if (!normalized || seen.has(normalized)) {
+        return false;
+      }
+      seen.add(normalized);
+      return true;
+    });
+  }
+
+  function generateSearchTerms(normalized) {
+    var descriptors = new Set([
+      "white",
+      "red",
+      "green",
+      "yellow",
+      "fresh",
+      "plain",
+      "raw",
+      "lean",
+      "large",
+      "small",
+      "medium",
+      "boneless",
+      "skinless",
+      "low",
+      "reduced",
+      "unsalted",
+      "salted",
+      "whole",
+      "ground",
+      "dried",
+      "chopped",
+      "sliced",
+      "shredded"
+    ]);
+    var stopWords = new Set([
+      "and",
+      "or",
+      "of"
+    ]);
+    var words = normalized.split(/\s+/).filter(Boolean);
+    var candidates = [normalized];
+
+    if (!words.length) {
+      return candidates;
+    }
+
+    var trimmedWords = words.slice();
+    while (trimmedWords.length && (descriptors.has(trimmedWords[0]) || stopWords.has(trimmedWords[0]))) {
+      trimmedWords.shift();
+      if (trimmedWords.length) {
+        candidates.push(trimmedWords.join(" "));
+      }
+    }
+
+    var singularWords = words.map(singularizeWord);
+    candidates.push(singularWords.join(" "));
+
+    if (trimmedWords.length) {
+      candidates.push(trimmedWords.map(singularizeWord).join(" "));
+    }
+
+    if (words.length >= 2) {
+      candidates.push(words.slice(-2).join(" "));
+      candidates.push(words.slice(-2).map(singularizeWord).join(" "));
+    }
+
+    candidates.push(words[words.length - 1]);
+    candidates.push(singularizeWord(words[words.length - 1]));
+
+    return uniqueTerms(candidates);
+  }
+
   async function fetchProductsForIngredient(rawIngredient) {
     var normalized = normalizeIngredient(rawIngredient);
     if (!normalized) {
-      return { raw: rawIngredient, normalized: normalized, products: [], error: false };
-    }
-
-    try {
-      var response = await fetch(buildSearchUrl(normalized));
-      if (!response.ok) {
-        throw new Error("Search failed with status " + response.status);
-      }
-      var data = await response.json();
       return {
         raw: rawIngredient,
         normalized: normalized,
-        products: Array.isArray(data.products) ? data.products.slice(0, 3) : [],
+        matchedTerm: "",
+        products: [],
+        error: false
+      };
+    }
+
+    var searchTerms = generateSearchTerms(normalized);
+
+    try {
+      for (var i = 0; i < searchTerms.length; i += 1) {
+        var term = searchTerms[i];
+        var response = await fetch(buildSearchUrl(term));
+        if (!response.ok) {
+          throw new Error("Search failed with status " + response.status);
+        }
+        var data = await response.json();
+        var products = Array.isArray(data.products) ? data.products.slice(0, 3) : [];
+        if (products.length) {
+          return {
+            raw: rawIngredient,
+            normalized: normalized,
+            matchedTerm: term,
+            products: products,
+            error: false
+          };
+        }
+      }
+
+      return {
+        raw: rawIngredient,
+        normalized: normalized,
+        matchedTerm: searchTerms[0] || normalized,
+        products: [],
         error: false
       };
     } catch (error) {
-      return { raw: rawIngredient, normalized: normalized, products: [], error: true };
+      return {
+        raw: rawIngredient,
+        normalized: normalized,
+        matchedTerm: searchTerms[0] || normalized,
+        products: [],
+        error: true
+      };
     }
   }
 
@@ -280,7 +404,9 @@
       var normalizedName = createElement(
         "div",
         "off-section-subtitle",
-        result.normalized ? "Search: " + result.normalized : "Search unavailable"
+        result.normalized
+          ? "Search: " + result.normalized + (result.matchedTerm && result.matchedTerm !== result.normalized ? " -> " + result.matchedTerm : "")
+          : "Search unavailable"
       );
       titleWrap.appendChild(ingredientName);
       titleWrap.appendChild(normalizedName);
