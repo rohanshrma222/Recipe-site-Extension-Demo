@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Smart Kitchen Assistant Demo",
+  "version": "1.0.0",
+  "description": "Smart Kitchen Assistant demo for Canada Food Guide recipes using Open Food Facts Canada.",
+  "icons": {
+    "128": "icons/icon.png"
+  },
+  "host_permissions": [
+    "https://world.openfoodfacts.org/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "styles.css"
+      ],
+      "matches": [
+        "*://food-guide.canada.ca/*"
+      ]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://food-guide.canada.ca/en/recipes/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
